@@ -13,7 +13,7 @@ let clone = require('fast-clone')
 import * as Winston from 'winston'
 
 import * as _ from 'underscore'
-import { CoreConnection, PeripheralDeviceAPI as P } from 'tv-automation-server-core-integration'
+import { CoreConnection, PeripheralDeviceAPI as P, CollectionObj } from 'tv-automation-server-core-integration'
 
 export interface TSRConfig {
 }
@@ -36,6 +36,7 @@ export interface TSRSettings { // Runtime settings from Core
 	}
 	initializeAsClear: boolean
 	mappings: Mappings,
+	debugLogging: boolean
 }
 export interface TSRDevice {
 	coreConnection: CoreConnection
@@ -72,8 +73,9 @@ export interface TimelineContentObjectTmp extends TimelineContentObject {
  * Represents a connection between Gateway and TSR
  */
 export class TSRHandler {
-	logger: Winston.LoggerInstance
-	tsr: Conductor
+	public logger: Winston.LoggerInstance
+	public tsr: Conductor
+	public debugLogging: boolean = false
 	private _config: TSRConfig
 	private _coreHandler: CoreHandler
 	private _triggerupdateTimelineTimeout: any = null
@@ -94,16 +96,16 @@ export class TSRHandler {
 		this._coreHandler.setTSR(this)
 
 		this._config = this._config // ts-lint: not used fix
-		console.log('========')
+		this.debugLog('========')
 
 		return coreHandler.core.getPeripheralDevice()
 		.then((peripheralDevice) => {
 			let settings: TSRSettings = peripheralDevice.settings || {}
 
-			console.log('Devices', settings.devices)
+			this.debugLog('Devices', settings.devices)
 			let c: ConductorOptions = {
 				getCurrentTime: (): number => {
-					// console.log('getCurrentTime', new Date(this._coreHandler.core.getCurrentTime()).toISOString() )
+					// this.debugLog('getCurrentTime', new Date(this._coreHandler.core.getCurrentTime()).toISOString() )
 					return this._coreHandler.core.getCurrentTime()
 					// return Date.now() // todo: tmp!
 				},
@@ -124,16 +126,19 @@ export class TSRHandler {
 			this.tsr.on('info', (msg, ...args) => {
 				this.logger.info('TSR',msg, ...args)
 			})
+			this.tsr.on('debug', (msg, ...args) => {
+				this.debugLog('TSR', msg, ...args)
+			})
 
 			this.tsr.on('setTimelineTriggerTime', (r: TimelineTriggerTimeResult) => {
-				console.log('setTimelineTriggerTime')
+				this.debugLog('setTimelineTriggerTime')
 				this._coreHandler.core.callMethod(P.methods.timelineTriggerTime, [r])
 				.catch((e) => {
 					this.logger.error('Error in setTimelineTriggerTime', e)
 				})
 			})
 			this.tsr.on('timelineCallback', (time, objId, callbackName, data) => {
-				// console.log('timelineCallback ' + callbackName, objId, new Date(time).toISOString() )
+				// this.debugLog('timelineCallback ' + callbackName, objId, new Date(time).toISOString() )
 				callbackName = callbackName
 				this._coreHandler.core.callMethod(P.methods.segmentLinePlaybackStarted, [{
 					roId: data.roId,
@@ -147,26 +152,26 @@ export class TSRHandler {
 
 			})
 
-			console.log('tsr init')
+			this.debugLog('tsr init')
 			return this.tsr.init()
 		})
 		.then(() => {
 			this._triggerupdateMapping()
 			this._triggerupdateTimeline()
-			this._triggerupdateDevices()
-			console.log('tsr init done')
+			this._deviceOptionsChanged()
+			this.debugLog('tsr init done')
 		})
 
 	}
 	setupObservers () {
 		if (this._observers.length) {
-			console.log('Clearing observers..')
+			this.debugLog('Clearing observers..')
 			this._observers.forEach((obs) => {
 				obs.stop()
 			})
 			this._observers = []
 		}
-		console.log('Renewing observers')
+		this.debugLog('Renewing observers')
 
 		let timelineObserver = this._coreHandler.core.observe('timeline')
 		timelineObserver.added = () => { this._triggerupdateTimeline() }
@@ -181,17 +186,22 @@ export class TSRHandler {
 		this._observers.push(mappingsObserver)
 
 		let deviceObserver = this._coreHandler.core.observe('peripheralDevices')
-		deviceObserver.added = () => { this._triggerupdateDevices() }
-		deviceObserver.changed = () => { this._triggerupdateDevices() }
-		deviceObserver.removed = () => { this._triggerupdateDevices() }
+		deviceObserver.added = () => { this._deviceOptionsChanged() }
+		deviceObserver.changed = () => { this._deviceOptionsChanged() }
+		deviceObserver.removed = () => { this._deviceOptionsChanged() }
 		this._observers.push(deviceObserver)
 
 	}
 	destroy (): Promise<void> {
 		return this.tsr.destroy()
 	}
+	debugLog (msg, ...args) {
+		if (this.debugLogging) {
+			this.logger.debug(msg, ...args)
+		}
+	}
 	private _triggerupdateTimeline () {
-		// console.log('got data')
+		// this.debugLog('got data')
 		if (this._triggerupdateTimelineTimeout) {
 			clearTimeout(this._triggerupdateTimelineTimeout)
 		}
@@ -220,7 +230,7 @@ export class TSRHandler {
 
 						let orgParse = driver.parse
 						driver.parse = function (...args) {
-							// console.log('---------------Parse')
+							// this.debugLog('---------------Parse')
 
 							// This is called when data starts arriving (?)
 							socket.receivingMessage = true
@@ -228,13 +238,13 @@ export class TSRHandler {
 						}
 
 						socket.on('message', () => {
-							// console.log('---------------Message')
+							// this.debugLog('---------------Message')
 
 							// The message has been recieved and emitted
 							socket.receivingMessage = false
 						})
-						// console.log('driver', driver)
-						// console.log('driver.parse', driver.parse)
+						// this.debugLog('driver', driver)
+						// this.debugLog('driver.parse', driver.parse)
 					} catch (e) {
 						this.logger.warn(e)
 					}
@@ -244,7 +254,7 @@ export class TSRHandler {
 				let checkIfNotSending = () => {
 					if (!socket.receivingMessage) {
 						if (time > 2) {
-							// console.log('updating timeline after ' + time)
+							// this.debugLog('updating timeline after ' + time)
 							this._updateTimeline()
 							return
 						}
@@ -271,7 +281,7 @@ export class TSRHandler {
 		}
 	}
 	private _updateTimeline () {
-		console.log('_updateTimeline')
+		this.debugLog('_updateTimeline')
 		let transformedTimeline = this._transformTimeline(this._coreHandler.core.getCollection('timeline').find((o) => {
 			return (
 				_.isArray(o.deviceId) ?
@@ -304,7 +314,15 @@ export class TSRHandler {
 			}
 		}
 	}
-	private _triggerupdateDevices () {
+	private _deviceOptionsChanged () {
+		let peripheralDevice = this.getThisPeripheralDevice()
+		if (peripheralDevice) {
+			let settings: TSRSettings = peripheralDevice.settings || {}
+			if (this.debugLogging !== settings.debugLogging) {
+				this.logger.debug('Changing debugLogging to ' + settings.debugLogging)
+				this.debugLogging = settings.debugLogging
+			}
+		}
 		if (this._triggerupdateDevicesTimeout) {
 			clearTimeout(this._triggerupdateDevicesTimeout)
 		}
@@ -312,10 +330,13 @@ export class TSRHandler {
 			this._updateDevices()
 		}, 20)
 	}
+	private getThisPeripheralDevice (): CollectionObj | undefined {
+		let peripheralDevices = this._coreHandler.core.getCollection('peripheralDevices')
+		return peripheralDevices.findOne(this._coreHandler.core.deviceId)
+	}
 	private _updateDevices () {
 		// TODO: rewrite so _addDevice & _removeDevice uses promises
-		let peripheralDevices = this._coreHandler.core.getCollection('peripheralDevices')
-		let peripheralDevice = peripheralDevices.findOne(this._coreHandler.core.deviceId)
+		let peripheralDevice = this.getThisPeripheralDevice()
 
 		if (peripheralDevice) {
 			let settings: TSRSettings = peripheralDevice.settings || {}
@@ -328,7 +349,7 @@ export class TSRHandler {
 
 				if (!oldDevice) {
 					if (device.options) {
-						console.log('Initializing device: ' + deviceId)
+						this.debugLog('Initializing device: ' + deviceId)
 						this._addDevice(deviceId, device)
 					}
 				} else {
@@ -341,9 +362,9 @@ export class TSRHandler {
 							}
 						})
 						if (anyChanged) {
-							console.log('Re-initializing device: ' + deviceId)
-							// console.log('old options', oldDevice.deviceOptions)
-							// console.log('new options', device.options)
+							this.debugLog('Re-initializing device: ' + deviceId)
+							// this.debugLog('old options', oldDevice.deviceOptions)
+							// this.debugLog('new options', device.options)
 							this._removeDevice(deviceId)
 							this._addDevice(deviceId, device)
 						}
@@ -354,7 +375,7 @@ export class TSRHandler {
 			_.each(this.tsr.getDevices(), (oldDevice: Device) => {
 				let deviceId = oldDevice.deviceId
 				if (!devices[deviceId]) {
-					console.log('Un-initializing device: ' + deviceId)
+					this.debugLog('Un-initializing device: ' + deviceId)
 					// this.tsr.removeDevice(deviceId)
 					this._removeDevice(deviceId)
 				}
@@ -362,7 +383,7 @@ export class TSRHandler {
 		}
 	}
 	private _addDevice (deviceId: string, options: DeviceOptions): void {
-		console.log('Adding device ' + deviceId)
+		this.debugLog('Adding device ' + deviceId)
 
 		this.tsr.addDevice(deviceId, options)
 		.then((device: Device) => {
@@ -390,7 +411,7 @@ export class TSRHandler {
 			}
 		})
 		.catch((e) => {
-			console.log('Error when adding device: ' + e)
+			this.debugLog('Error when adding device: ' + e)
 		})
 	}
 	private _removeDevice (deviceId: string) {
